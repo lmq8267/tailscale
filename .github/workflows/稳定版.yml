@@ -63,6 +63,10 @@ jobs:
           git clone https://github.com/tailscale/tailscale -b ${{ needs.check.outputs.ver }} /opt/src
           cd /opt/src
           sudo timedatectl set-timezone "Asia/Shanghai"
+          
+          # 修改go版本为 1.25 因为自从1.26开始不支持mispel了
+          sed -i 's/^go .*/go 1.25/' go.mod
+          
           #sed -i 's|return strings.TrimSpace(tailscaleroot.VersionDotTxt) + "-ERR-BuildInfo"|return strings.TrimSpace(tailscaleroot.VersionDotTxt)|g' ./version/version.go
           #sed -i 's|return fmt.Sprintf("%s-dev%s-t%s%s", strings.TrimSpace(tailscaleroot.VersionDotTxt), bi.commitDate, bi.commitAbbrev(), dirtyString())|return fmt.Sprintf(strings.TrimSpace(tailscaleroot.VersionDotTxt))|g' ./version/version.go
           sed -i 's|return strings.TrimSpace(tailscaleroot.VersionDotTxt) + "-dev" + bi.commitDate|return strings.TrimSpace(tailscaleroot.VersionDotTxt)|g' ./version/version.go
