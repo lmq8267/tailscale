@@ -66,6 +66,7 @@ jobs:
           
           # 修改go版本为 1.25 因为自从1.26开始不支持mispel了
           sed -i 's/^go .*/go 1.25/' go.mod
+          go mod tidy
           
           #sed -i 's|return strings.TrimSpace(tailscaleroot.VersionDotTxt) + "-ERR-BuildInfo"|return strings.TrimSpace(tailscaleroot.VersionDotTxt)|g' ./version/version.go
           #sed -i 's|return fmt.Sprintf("%s-dev%s-t%s%s", strings.TrimSpace(tailscaleroot.VersionDotTxt), bi.commitDate, bi.commitAbbrev(), dirtyString())|return fmt.Sprintf(strings.TrimSpace(tailscaleroot.VersionDotTxt))|g' ./version/version.go
