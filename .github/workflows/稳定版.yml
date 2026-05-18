@@ -49,7 +49,7 @@ jobs:
       - name: 安装go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.7' 
+          go-version: ${{ env.gotag }}
           # ${{ env.gotag }}
       - name: 安装 UPX
         uses: crazy-max/ghaction-upx@v3
@@ -65,7 +65,7 @@ jobs:
           sudo timedatectl set-timezone "Asia/Shanghai"
           
           # 修改go版本为 1.25 因为自从1.26开始不支持mispel了
-          sed -i 's/^go .*/go 1.25/' go.mod
+          # sed -i 's/^go .*/go 1.25/' go.mod
           go mod tidy
           
           #sed -i 's|return strings.TrimSpace(tailscaleroot.VersionDotTxt) + "-ERR-BuildInfo"|return strings.TrimSpace(tailscaleroot.VersionDotTxt)|g' ./version/version.go
