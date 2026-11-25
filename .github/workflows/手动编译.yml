@@ -4,19 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: '编译github.tailscale/tailscale分支或版本号，默认主分支main'
+        description: '编译 github.com/tailscale/tailscale 分支或版本号，默认 v1.68.0'
         required: true
         default: 'v1.68.0'
       name:
-        description: '自定义版本号（即自定义 ./tailscaled -version 所显示的版本信息）'
+        description: '自定义版本号后缀（追加到 ./tailscaled -version 第一行）'
         required: false
         default: ''
       extra:
-        description: '自定义短语（即自定义 ./tailscaled -version 所显示的额外信息）'
+        description: '自定义短语（显示为 -version 的“额外信息”）'
         required: false
         default: ''
       tspath:
-        description: '自定义密钥路径（官方默认：/var/lib/tailscale/tailscaled.state）'
+        description: '自定义密钥路径（官方默认：/var/lib/tailscale/tailscaled.state；必须是绝对路径；日志建议重定向到 /tmp）'
         required: false
         default: ''
       target:
@@ -60,9 +60,9 @@ jobs:
           echo "go版本=$latest_version"
           echo "gotag=$latest_version" >> $GITHUB_ENV
       - name: 安装go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: 1.25.7 # ${{ env.gotag }}
+          go-version: ${{ env.gotag }}
       - name: 开始编译
         run: |
             git clone -b $branch https://github.com/tailscale/tailscale /opt/tailscale
@@ -116,19 +116,40 @@ jobs:
                 ;;
             esac
             version=$(cat ./VERSION.txt)
+            short="${version}"
+            if [ -n "${name}" ]; then
+              short="${short} ${name}"
+            fi
             #sed -i 's/getEmbeddedInfo().commit/""/g' ./version/version.go
             if [ -n "${{ github.event.inputs.tspath }}" ]; then
+              case "${{ github.event.inputs.tspath }}" in
+                /*) ;;
+                *) echo "错误：密钥路径必须是绝对路径"; exit 1 ;;
+              esac
               sed -i "s|return \"/var/lib/tailscale/tailscaled.state\"|return \"${{ github.event.inputs.tspath }}\"|g" ./paths/paths_unix.go
+              grep -qF "return \"${{ github.event.inputs.tspath }}\"" ./paths/paths_unix.go || { echo "错误：密钥路径替换失败，上游源码可能已变化"; exit 1; }
               echo "修改密钥文件路径为：${{ github.event.inputs.tspath }}"
             fi
-            sed -i 's/-dirty//g' ./version/version.go
-            sed -i 's#"  track: unstable (dev); frequent updates and bugs are likely\\n"#"  注意：这是不稳定版本（开发版）；可能会频繁更新代码和存在一些bug\\n"#g' ./version/print.go
-            sed -i 's#"  other commit: %s\\n", extraGitCommitStamp#"  %s\\n", extraGitCommitStamp#g' ./version/print.go
+            # 上游只在状态文件父目录名为 tailscale 时才推导 VarRoot（TLS 证书、Taildrop 临时文件用）；
+            # 自定义路径如 /etc/storage/tailscale/lib 会让 VarRoot 为空，这里改为任意绝对路径都推导。
+            if grep -q 'strings.EqualFold(filepath.Base(dir), "tailscale")' ./cmd/tailscaled/tailscaled.go; then
+              sed -i 's|strings.EqualFold(filepath.Base(dir), "tailscale")|dir != ""|' ./cmd/tailscaled/tailscaled.go
+            else
+              echo "提示：当前版本没有 VarRoot 推导逻辑，自定义密钥目录请同时传 --statedir"
+            fi
+            # 只改 dirtyString 的返回值，避免把源码注释里的 -dirty 一起删掉
+            sed -i 's|return "-dirty"|return ""|' ./version/version.go
+            # 将 -version 的英文提示改成中文；上游改文案时这些 sed 会静默失效
+            # 按需求不输出 -version 里的 track 提示
+            sed -i 's|fmt.Fprintf(&ret, "  track: unstable (dev); frequent updates and bugs are likely\\n")|// track 提示已按需求移除|' ./version/print.go
+            sed -i 's#"  other commit: %s\\n", extraGitCommitStamp#"  额外信息: %s\\n", extraGitCommitStamp#g' ./version/print.go
             sed -i 's#"  tailscale commit: %s%s\\n", gitCommit(), dirtyString()#"  当前版本提交hash值: %s\\n", gitCommit()#g' ./version/print.go
+            sed -i 's#"  long version: %s\\n"#"  完整版本号: %s\\n"#g' ./version/print.go
+            sed -i 's#"  go version: %s (tailscale/go %s)\\n"#"  go 版本: %s (tailscale/go %s)\\n"#g' ./version/print.go
             sed -i 's#"  go version: %s\\n"#"  go 版本: %s\\n"#g' ./version/print.go
-            go build -ldflags="-X 'tailscale.com/version.longStamp=${version}' -X 'tailscale.com/version.shortStamp=${version} ${name}' -X 'tailscale.com/version.gitCommitStamp=' -X 'tailscale.com/version.extraGitCommitStamp=$extra' -s -w" tailscale.com/cmd/tailscale
-            go build -ldflags="-X 'tailscale.com/version.longStamp=${version}' -X 'tailscale.com/version.shortStamp=${version} ${name}' -X 'tailscale.com/version.gitCommitStamp=' -X 'tailscale.com/version.extraGitCommitStamp=$extra' -s -w" tailscale.com/cmd/tailscaled
-            go build -ldflags="-X 'tailscale.com/version.longStamp=${version}' -X 'tailscale.com/version.shortStamp=${version} ${name}' -X 'tailscale.com/version.gitCommitStamp=' -X 'tailscale.com/version.extraGitCommitStamp=$extra' -s -w" tailscale.com/cmd/derper
+            go build -buildvcs=false -trimpath -ldflags="-X 'tailscale.com/version.longStamp=${version}' -X 'tailscale.com/version.shortStamp=${short}' -X 'tailscale.com/version.extraGitCommitStamp=$extra' -s -w" tailscale.com/cmd/tailscale
+            go build -buildvcs=false -trimpath -ldflags="-X 'tailscale.com/version.longStamp=${version}' -X 'tailscale.com/version.shortStamp=${short}' -X 'tailscale.com/version.extraGitCommitStamp=$extra' -s -w" tailscale.com/cmd/tailscaled
+            go build -buildvcs=false -trimpath -ldflags="-X 'tailscale.com/version.longStamp=${version}' -X 'tailscale.com/version.shortStamp=${short}' -X 'tailscale.com/version.extraGitCommitStamp=$extra' -s -w" tailscale.com/cmd/derper
             mkdir -p /opt/bin
             echo "tailscale ：`ls -alh tailscale | awk '{print $5}'`"
             echo "tailscaled ：`ls -alh tailscaled | awk '{print $5}'`"
