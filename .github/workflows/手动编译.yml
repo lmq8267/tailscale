@@ -137,6 +137,19 @@ jobs:
             else
               echo "提示：当前版本没有 VarRoot 推导逻辑，自定义密钥目录请同时传 --statedir"
             fi
+            # 去掉 derper manual 证书模式对 SNI 与 --hostname 不一致的拒绝，
+            # 避免客户端用 IP 或其他域名连接时报 cert mismatch with hostname。
+            # 改成 if false 而不是删 3 行，避免上游 if 块变化时误删其他代码。
+            if grep -q 'hi.ServerName != m.hostname' ./cmd/derper/cert.go; then
+              sed -i 's#if hi.ServerName != m.hostname && !m.noHostname {#if false {#' ./cmd/derper/cert.go
+              if grep -q 'hi.ServerName != m.hostname' ./cmd/derper/cert.go; then
+                echo "错误：derper 证书主机名校验移除失败"; exit 1
+              fi
+            elif grep -q 'cert mismatch with hostname' ./cmd/derper/cert.go; then
+              echo "错误：derper 仍存在 cert mismatch with hostname 校验，请检查上游改动"; exit 1
+            else
+              echo "提示：当前 derper 源码没有该主机名校验"
+            fi
             # 只改 dirtyString 的返回值，避免把源码注释里的 -dirty 一起删掉
             sed -i 's|return "-dirty"|return ""|' ./version/version.go
             # 将 -version 的英文提示改成中文；上游改文案时这些 sed 会静默失效
