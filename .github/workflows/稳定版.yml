@@ -57,27 +57,47 @@ jobs:
           version: v4.2.4
           install-only: true
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
       - name: 编译
         run: |
           git clone https://github.com/tailscale/tailscale -b ${{ needs.check.outputs.ver }} /opt/src
           cd /opt/src
           sudo timedatectl set-timezone "Asia/Shanghai"
-          
-          # 修改go版本为 1.25 因为自从1.26开始不支持mispel了
-          # sed -i 's/^go .*/go 1.25/' go.mod
           go mod tidy
           
+          # 版本号统一由下方 -X longStamp/shortStamp 注入，不再用 sed 修改版本文件；
+          # Long()/Short() 是函数，只能注入 longStamp/shortStamp 这两个字符串变量。
           #sed -i 's|return strings.TrimSpace(tailscaleroot.VersionDotTxt) + "-ERR-BuildInfo"|return strings.TrimSpace(tailscaleroot.VersionDotTxt)|g' ./version/version.go
           #sed -i 's|return fmt.Sprintf("%s-dev%s-t%s%s", strings.TrimSpace(tailscaleroot.VersionDotTxt), bi.commitDate, bi.commitAbbrev(), dirtyString())|return fmt.Sprintf(strings.TrimSpace(tailscaleroot.VersionDotTxt))|g' ./version/version.go
-          sed -i 's|return strings.TrimSpace(tailscaleroot.VersionDotTxt) + "-dev" + bi.commitDate|return strings.TrimSpace(tailscaleroot.VersionDotTxt)|g' ./version/version.go
           sed -i 's|return "/var/lib/tailscale/tailscaled.state"|return "/etc/storage/tailscale/lib/tailscaled.state"|g' ./paths/paths_unix.go
-          #sed -i '/hi.ServerName != m.hostname/,+2d' cmd/derper/cert.go || true
+          # 上游只在状态文件父目录名为 tailscale 时才推导 VarRoot（TLS 证书、Taildrop 临时文件用）；
+          # /etc/storage/tailscale/lib 会让 VarRoot 为空，这里改为任意绝对路径都推导。
+          if grep -q 'strings.EqualFold(filepath.Base(dir), "tailscale")' ./cmd/tailscaled/tailscaled.go; then
+            sed -i 's|strings.EqualFold(filepath.Base(dir), "tailscale")|dir != ""|' ./cmd/tailscaled/tailscaled.go
+          else
+            echo "警告：未找到 VarRoot 推导逻辑，自定义密钥目录时请配合 --statedir"
+          fi
+          grep -qF 'return "/etc/storage/tailscale/lib/tailscaled.state"' ./paths/paths_unix.go || { echo "错误：密钥路径替换失败，上游源码可能已变化"; exit 1; }
+          # 按需求不输出 -version 里的 track 提示
+          sed -i 's|fmt.Fprintf(&ret, "  track: unstable (dev); frequent updates and bugs are likely\\n")|// track 提示已按需求移除|' ./version/print.go
+          # 去掉 derper manual 证书模式对 SNI 与 --hostname 不一致的拒绝，
+          # 避免客户端用 IP 或其他域名连接时报 cert mismatch with hostname。
+          # 改成 if false 而不是删 3 行，避免上游 if 块变化时误删其他代码。
+          if grep -q 'hi.ServerName != m.hostname' ./cmd/derper/cert.go; then
+            sed -i 's#if hi.ServerName != m.hostname && !m.noHostname {#if false {#' ./cmd/derper/cert.go
+            if grep -q 'hi.ServerName != m.hostname' ./cmd/derper/cert.go; then
+              echo "错误：derper 证书主机名校验移除失败"; exit 1
+            fi
+          elif grep -q 'cert mismatch with hostname' ./cmd/derper/cert.go; then
+            echo "错误：derper 仍存在 cert mismatch with hostname 校验，请检查上游改动"; exit 1
+          else
+            echo "提示：当前 derper 源码没有该主机名校验"
+          fi
 
           echo 正常编译
-          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" tailscale.com/cmd/tailscale
-          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" tailscale.com/cmd/tailscaled
-          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" tailscale.com/cmd/derper
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -buildvcs=false -trimpath -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" tailscale.com/cmd/tailscale
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -buildvcs=false -trimpath -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" tailscale.com/cmd/tailscaled
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -buildvcs=false -trimpath -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" tailscale.com/cmd/derper
           mkdir -p /opt/tainomal
           cp -rf tailscale /opt/tainomal/tailscale
           cp -rf tailscaled /opt/tainomal/tailscaled
@@ -92,7 +112,7 @@ jobs:
           cd /opt/src
           echo 编译迷你版
           go clean
-          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o tailscaled.combined -tags ts_include_cli -ldflags="-X 'tailscale.com/version.Long=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.Short=${{ needs.check.outputs.ver }}' -s -w" ./cmd/tailscaled
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -buildvcs=false -trimpath -o tailscaled.combined -tags ts_include_cli -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" ./cmd/tailscaled
           mkdir -p /opt/taifull
           cp -rf tailscaled.combined /opt/taifull/tailscaled_full
           cd /opt/taifull
@@ -101,8 +121,8 @@ jobs:
           cd /opt/src
           go clean
           echo 编译精简版
-          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o tailscale -tags ts_omit_aws,ts_omit_bird,ts_omit_tap,ts_omit_kube,ts_omit_completion,ts_omit_ssh,ts_omit_wakeonlan,ts_omit_capture -ldflags="-X 'tailscale.com/version.Long=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.Short=${{ needs.check.outputs.ver }}' -s -w" ./cmd/tailscale
-          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o tailscaled -tags ts_omit_aws,ts_omit_bird,ts_omit_tap,ts_omit_kube,ts_omit_completion,ts_omit_ssh,ts_omit_wakeonlan,ts_omit_capture -ldflags="-X 'tailscale.com/version.Long=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.Short=${{ needs.check.outputs.ver }}' -s -w" ./cmd/tailscaled
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -buildvcs=false -trimpath -o tailscale -tags ts_omit_aws,ts_omit_bird,ts_omit_tap,ts_omit_kube,ts_omit_completion,ts_omit_ssh,ts_omit_wakeonlan,ts_omit_capture -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" ./cmd/tailscale
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -buildvcs=false -trimpath -o tailscaled -tags ts_omit_aws,ts_omit_bird,ts_omit_tap,ts_omit_kube,ts_omit_completion,ts_omit_ssh,ts_omit_wakeonlan,ts_omit_capture -ldflags="-X 'tailscale.com/version.longStamp=${{ needs.check.outputs.ver }}' -X 'tailscale.com/version.shortStamp=${{ needs.check.outputs.ver }}' -s -w" ./cmd/tailscaled
           mkdir -p /opt/tailite
           cp -rf tailscaled /opt/tailite/tailscaled_lite
           cp -rf tailscale /opt/tailite/tailscale_lite
@@ -137,7 +157,7 @@ jobs:
           #git push --quiet "https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
       - 
         name: 发布 
-        uses: softprops/action-gh-release@v2.2.2
+        uses: lmq8267/action-gh-release@master
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
@@ -146,6 +166,10 @@ jobs:
            ##
            
            **密钥存储位置已改为：`/etc/storage/tailscale/lib/tailscaled.state`适用于Padavan路由器**
+
+           **状态文件只在校验、登录或配置变化时写入；TLS 证书和 Taildrop 临时文件默认也会落在状态文件目录。若要进一步减少闪存写入，启动时同时指定 `--state=/etc/storage/tailscale/lib/tailscaled.state --statedir=/tmp/tailscale`（先 `mkdir -p /tmp/tailscale`），让状态文件留在闪存、证书和临时文件放到内存盘。只加 `--statedir` 会把状态文件也移到 `/tmp`，重启后需要重新登录。**
+
+           **日志不要写到 `/etc/storage`：tailscaled 默认输出到 stderr，请重定向到 `/tmp`（例如 `2>/tmp/tailscaled.log`）或使用 `--syslog`，避免频繁写日志缩短闪存寿命。**
 
            ##
            
@@ -163,19 +187,44 @@ jobs:
            **迷你版需要改名为`tailscaled` 并用命令`ln -sf tailscaled tailscale` 软链接出`tailscale`子程序**
            **迷你版是将两个程序集中在一个二进制里面使用软链接分出子程序**
            
-           **[精简版为省略调试信息和较少使用的功能等内容](https://tailscale.com/kb/1207/small-tailscale/)**
-           <details>  <summary>精简掉的功能:</summary>
+           **精简版已集成的主要功能**
 
-           - `ts_omit_aws`：不编译 AWS 相关功能。
-           - `ts_omit_bird`：不编译 BIRD（BGP Daemon）。
-           - `ts_omit_tap`：不编译 TUN/TAP 设备支持。
-           - `ts_omit_kube`：不编译 Kubernetes 相关功能。
-           - `ts_omit_completion`：不编译 Shell 自动补全功能。
-           - `ts_omit_ssh`：不编译 Tailscale SSH 相关功能。
-           - `ts_omit_wakeonlan`：不编译 Wake-on-LAN 相关功能。
-           - `ts_omit_capture`：不编译流量捕获相关功能。
+           | 功能模块 | 具体作用 |
+           | --- | --- |
+           | MagicDNS / 系统 DNS | 解析 tailnet 域名，并按平台配置系统 DNS |
+           | 子网路由 | 向其他节点宣告子网路由，并使用其他节点宣告的路由 |
+           | 出口节点 | 作为出口节点转发流量，或使用其他节点作为出口 |
+           | 应用连接器 | App Connectors 支持 |
+           | NAT 穿透 / UDP 传输 | STUN、disco 打洞、UDP 点对点与中继客户端 |
+           | 用户态网络（netstack） | 无 TUN 或需要 userspace networking 时使用 |
+           | Serve / Funnel | 在 tailnet 内或公网提供服务 |
+           | Taildrop / Taildrive | 节点间发送文件、文件服务器 |
+           | Web client | 内置 Web 客户端 |
+           | Tailnet Lock | 网络锁，防止未授权节点加入 |
+           | 日志 | 日志上传、网络流日志 |
+           | 诊断 / 健康检查 | `tailscale doctor`、`netcheck`、健康状态检查 |
+           | Tailscale SSH 客户端 | `tailscale ssh` 仍可用；本精简版只移除了服务端 |
+           | 认证与密钥 | Auth key、OAuth、身份联邦 |
+           | 出站代理 | 通过 Tailscale 访问本地 HTTP/SOCKS 代理 |
 
-           </details>
+           未列出的其他功能默认保留；平台专属功能（Windows、macOS、Android 等）在 Linux 构建中本来就不会生效。
+
+           **精简版未集成的功能**
+
+           | 构建标签 | 功能模块 | 具体作用 / 影响 |
+           | --- | --- | --- |
+           | `ts_omit_aws` | AWS 集成 | 不读取 EC2 user-data；不能用 `arn:aws:ssm:` 状态存储（该存储仅在 linux/arm64、amd64 或 `ts_aws` 下注册） |
+           | `ts_omit_bird` | BIRD BGP 集成 | 不能通过 `--bird-socket` 对接外部 BIRD；普通子网路由不受影响 |
+           | `ts_omit_tap` | 实验性二层 TAP | 不能用 `--tun=tap:...`；普通 TUN 模式正常 |
+           | `ts_omit_kube` | Kubernetes 集成 | 没有 `tailscale configure kubeconfig` 等命令；mipsle 下本来也不会注册 K8s Secret 状态存储 |
+           | `ts_omit_completion` | Shell 自动补全 | `tailscale` CLI 的 bash/zsh/fish 补全不可用 |
+           | `ts_omit_ssh` | Tailscale SSH 服务端 | 本机不能作为 Tailscale SSH 服务端；`tailscale ssh` 客户端仍可用 |
+           | `ts_omit_wakeonlan` | Wake-on-LAN | 不能通过 `tailscale` 发送 WOL 魔术包 |
+           | `ts_omit_capture` | 抓包 | `tailscale debug capture` 不可用；不影响正常转发和网络流日志（netlog） |
+
+           所有版本都使用 `-s -w` 去除调试符号；精简版在此基础上额外移除上表功能。
+
+           注：官方 `small-tailscale` 的 `--extra-small` 构建只保留 `osrouter`、`nattraversal`，比本精简版更激进，两者不要混用同一套说明。
            
            **[官方更新说明](https://github.com/tailscale/tailscale/releases)**
            
